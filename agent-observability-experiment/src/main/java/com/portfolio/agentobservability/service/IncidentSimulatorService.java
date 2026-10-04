@@ -1,6 +1,7 @@
 package com.portfolio.agentobservability.service;
 
 import com.portfolio.agentobservability.domain.AgentLog;
+import com.portfolio.agentobservability.domain.DetectionResult;
 import com.portfolio.agentobservability.domain.SystemState;
 import com.portfolio.agentobservability.domain.Tool;
 import org.springframework.stereotype.Service;
@@ -19,9 +20,20 @@ import java.util.concurrent.ThreadLocalRandom;
  * it's the experiment. The point is to find out, after the fact, which
  * questions about "what did the agent do and why" survive in the trail,
  * and which quietly disappear.
+ *
+ * Week 6 adds a Detect stage after Act: the agent's action is checked
+ * against SideEffectDetector, which flags changes to known-sensitive
+ * fields (e.g. rateLimitActive) but has no way to flag a consequence
+ * outside that model. That gap is the Week 6 finding, not a bug.
  */
 @Service
 public class IncidentSimulatorService {
+
+    private final SideEffectDetector sideEffectDetector;
+
+    public IncidentSimulatorService(SideEffectDetector sideEffectDetector) {
+        this.sideEffectDetector = sideEffectDetector;
+    }
 
     public AgentLog runIncident(int maxSteps) {
         AgentLog log = new AgentLog();
@@ -30,6 +42,7 @@ public class IncidentSimulatorService {
         for (int i = 0; i < maxSteps; i++) {
             Tool tool = decide(state, log);
             SystemState next = act(tool, log);
+            detect(state, next, log);
             boolean resolved = verify(state, next, log);
             state = next;
             if (resolved && state.errorRate() < 0.05) {
@@ -86,6 +99,17 @@ public class IncidentSimulatorService {
         // nobody thought to treat it as a metric worth watching.
         log.record("act", fields);
         return next;
+    }
+
+    private void detect(SystemState before, SystemState after, AgentLog log) {
+        DetectionResult result = sideEffectDetector.detect(before, after);
+        // NEW (Week 6): makes the side effect visible WITHOUT a person
+        // having to read the trail and notice it themselves — but only
+        // for fields SideEffectDetector already knows to compare.
+        log.record("detect", Map.of(
+                "flagged", result.flagged(),
+                "flaggedFields", result.flaggedFields()
+        ));
     }
 
     private boolean verify(SystemState previous, SystemState current, AgentLog log) {
